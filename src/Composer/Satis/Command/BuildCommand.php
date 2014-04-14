@@ -52,6 +52,7 @@ class BuildCommand extends Command
                 new InputArgument('output-dir', InputArgument::OPTIONAL, 'Location where to output built files', null),
                 new InputOption('no-html-output', null, InputOption::VALUE_NONE, 'Turn off HTML view'),
                 new InputOption('skip-errors', null, InputOption::VALUE_NONE, 'Skip Download or Archive errors'),
+                new InputOption('repository-url', null, InputOption::VALUE_OPTIONAL, 'Only update the repository at given url', null),
             ))
             ->setHelp(<<<EOT
 The <info>build</info> command reads the given json file
@@ -143,6 +144,39 @@ EOT
         $composer = $this->getApplication()->getComposer(true, $config);
         $packages = $this->selectPackages($composer, $output, $verbose, $requireAll, $requireDependencies, $requireDevDependencies, $minimumStability, $skipErrors);
 
+        if (($singleRepositoryUrl = $input->getOption('repository-url')) !== null
+            && FALSE !== ($otherPackagesCache = @file_get_contents($outputDir.'/packages.cache')))
+        {
+            $singleRepositoryUrl = $input->getOption('repository-url');
+
+            $otherPackages = unserialize($otherPackagesCache);
+
+            // find repository configuration
+            $singleRepositoryConfig = null;
+            foreach ($config['repositories'] as $r) {
+                if ($r['url'] == $singleRepositoryUrl) {
+                    $singleRepositoryConfig = $r;
+                    break;
+                }
+            }
+            if ($singleRepositoryConfig === null) {
+                throw new \InvalidArgumentException('Requested repository not found in configuration: '.$singleRepositoryUrl);
+            }
+
+            // use only selected repository
+            $config['repositories'] = array($singleRepositoryConfig);
+
+            $composer = $this->getApplication()->getComposer(true, $config);
+            $packages = $this->selectPackages($composer, $output, $verbose, $requireAll, $requireDependencies);
+
+            // merge with cached data
+            $packages = array_merge($otherPackages, $packages);
+            ksort($packages, SORT_STRING);
+        } else {
+            $composer = $this->getApplication()->getComposer(true, $config);
+            $packages = $this->selectPackages($composer, $output, $verbose, $requireAll, $requireDependencies);
+        }
+
         if ($htmlView = !$input->getOption('no-html-output')) {
             $htmlView = !isset($config['output-html']) || $config['output-html'];
         }
@@ -150,6 +184,8 @@ EOT
         if (isset($config['archive']['directory'])) {
             $this->dumpDownloads($config, $packages, $input, $output, $outputDir, $skipErrors);
         }
+
+        file_put_contents($outputDir.'/packages.cache', serialize($packages));
 
         $filename = $outputDir.'/packages.json';
         $this->dumpJson($packages, $output, $filename);
